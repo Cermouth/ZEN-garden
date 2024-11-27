@@ -259,6 +259,8 @@ class EnergySystem:
         model = self.optimization_setup.model
         # carbon emissions
         variables.add_variable(model, name="carbon_emissions_annual", index_sets=sets["set_time_steps_yearly"], doc="annual carbon emissions of energy system", unit_category={"emissions": 1})
+        variables.add_variable(model, name="employee_annual", index_sets=sets["set_time_steps_yearly"], doc="annual carbon emissions of energy system", unit_category={})
+        variables.add_variable(model, name="trade_annual", index_sets=sets["set_time_steps_yearly"], doc="annual carbon emissions of energy system", unit_category={})
         # cumulative carbon emissions
         variables.add_variable(model, name="carbon_emissions_cumulative", index_sets=sets["set_time_steps_yearly"],
                                doc="cumulative carbon emissions of energy system over time for each year", unit_category={"emissions": 1})
@@ -301,6 +303,12 @@ class EnergySystem:
         # total carbon emissions
         constraints.add_constraint_block(model, name="constraint_carbon_emissions_annual", constraint=self.rules.constraint_carbon_emissions_annual_block(),
                                          doc="total annual carbon emissions of energy system")
+        # total employee
+        constraints.add_constraint_block(model, name="constraint_employee_annual", constraint=self.rules.constraint_employee_annual_block(),
+                                         doc="total annual carbon emissions of energy system")
+        # total trade
+        constraints.add_constraint_block(model, name="constraint_trade_annual", constraint=self.rules.constraint_trade_annual_block(),
+                                         doc="total annual carbon emissions of energy system")
         # cost of carbon emissions
         constraints.add_constraint_block(model, name="constraint_cost_carbon_emissions_total", constraint=self.rules.constraint_cost_carbon_emissions_total_block(),
                                          doc="total carbon emissions cost of energy system")
@@ -326,6 +334,12 @@ class EnergySystem:
         elif self.optimization_setup.analysis["objective"] == "risk":
             logging.info("Objective of minimizing risk not yet implemented")
             objective_rule = self.rules.objective_risk_rule(self.optimization_setup.model)
+        elif self.optimization_setup.analysis["objective"] == "total_employee":
+            logging.info("Objective of minimizing test used")
+            objective_rule = self.rules.objective_total_employee_rule(self.optimization_setup.model)
+        elif self.optimization_setup.analysis["objective"] == "total_trade":
+            logging.info("Objective of minimizing trade used")
+            objective_rule = self.rules.objective_total_trade_rule(self.optimization_setup.model)
         else:
             raise KeyError(f"Objective type {self.optimization_setup.analysis['objective']} not known")
 
@@ -397,6 +411,7 @@ class EnergySystemRules(GenericRule):
 
         ### return
         return self.constraints.return_contraints(constraints)
+    
 
     def constraint_carbon_emissions_annual_limit_rule(self, year):
         """ time dependent carbon emissions limit from technologies and carriers
@@ -600,6 +615,66 @@ class EnergySystemRules(GenericRule):
 
         ### return
         return self.constraints.return_contraints(constraints)
+    
+    def constraint_employee_annual_block(self):
+        """ add up all carbon emissions from technologies and carriers
+
+        .. math::
+            E_y = E_{y,\mathcal{H}} + E_{y,\mathcal{C}}
+
+        :return: total carbon emissions constraint for specified year
+        """
+
+        ### index sets
+        # not necessary
+
+        ### masks
+        # not necessary
+
+        ### index loop
+        # not necessary
+
+        ### auxiliary calculations
+        # not necessary
+
+        ### formulate constraint
+        lhs = (self.variables["employee_annual"]
+               - self.variables["employee_technology_total"])
+        rhs = 0
+        constraints = lhs == rhs
+
+        ### return
+        return self.constraints.return_contraints(constraints)
+    
+    def constraint_trade_annual_block(self):
+        """ add up all carbon emissions from technologies and carriers
+
+        .. math::
+            E_y = E_{y,\mathcal{H}} + E_{y,\mathcal{C}}
+
+        :return: total carbon emissions constraint for specified year
+        """
+
+        ### index sets
+        # not necessary
+
+        ### masks
+        # not necessary
+
+        ### index loop
+        # not necessary
+
+        ### auxiliary calculations
+        # not necessary
+
+        ### formulate constraint
+        lhs = (self.variables["trade_annual"]
+               - self.variables["trade_technology_total"])
+        rhs = 0
+        constraints = lhs == rhs
+
+        ### return
+        return self.constraints.return_contraints(constraints)
 
     def constraint_cost_carbon_emissions_total_block(self):
         """ carbon cost associated with the carbon emissions of the system in each year
@@ -695,6 +770,31 @@ class EnergySystemRules(GenericRule):
         """
         sets = self.sets
         return sum(model.variables["carbon_emissions_annual"][year] for year in sets["set_time_steps_yearly"])
+
+    def objective_total_employee_rule(self, model):
+        """objective function to minimize total emissions
+
+        .. math::
+            J = \sum_{y\in\mathcal{Y}} E_y
+
+        :param model: optimization model
+        :return: total carbon emissions objective function
+        """
+        sets = self.sets
+        return sum(model.variables["employee_annual"][year] for year in sets["set_time_steps_yearly"])
+
+    def objective_total_trade_rule(self, model):
+        """objective function to minimize total emissions
+
+        .. math::
+            J = \sum_{y\in\mathcal{Y}} E_y
+
+        :param model: optimization model
+        :return: total carbon emissions objective function
+        """
+        sets = self.sets
+        return sum(model.variables["trade_annual"][year] for year in sets["set_time_steps_yearly"])
+
 
     def objective_risk_rule(self, model):
         """objective function to minimize total risk

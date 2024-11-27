@@ -61,10 +61,12 @@ class Technology(Element):
         self.raw_time_series = {}
         self.raw_time_series["min_load"] = self.data_input.extract_input_data("min_load", index_sets=[set_location, "set_time_steps"], time_steps="set_base_time_steps_yearly", unit_category={})
         self.raw_time_series["max_load"] = self.data_input.extract_input_data("max_load", index_sets=[set_location, "set_time_steps"], time_steps="set_base_time_steps_yearly", unit_category={})
-        self.raw_time_series["opex_specific_variable"] = self.data_input.extract_input_data("opex_specific_variable", index_sets=[set_location, "set_time_steps"], time_steps="set_base_time_steps_yearly", unit_category={"money": 1, "energy_quantity": -1})
+        self.raw_time_series["opex_specific_variable"] = self.data_input.extract_input_data("opex_specific_variable", index_sets=[set_location, "set_time_steps"], time_steps="set_base_time_steps_yearly", unit_category={"money": 1, "energy_quantity": -1, "distance": -1})
         # non-time series input data
         self.capacity_limit = self.data_input.extract_input_data("capacity_limit", index_sets=[set_location, "set_time_steps_yearly"], time_steps="set_time_steps_yearly", unit_category={"energy_quantity": 1, "time": -1})
         self.carbon_intensity_technology = self.data_input.extract_input_data("carbon_intensity_technology", index_sets=[set_location], unit_category={"emissions": 1, "energy_quantity": -1})
+
+        self.employee_technology = self.data_input.extract_input_data("employee_technology", index_sets=[set_location], unit_category={"emissions": 1, "energy_quantity": -1})
         # extract existing capacity
         self.set_technologies_existing = self.data_input.extract_set_technologies_existing()
         self.capacity_existing = self.data_input.extract_input_data("capacity_existing", index_sets=[set_location, "set_technologies_existing"], unit_category={"energy_quantity": 1, "time": -1})
@@ -342,6 +344,8 @@ class Technology(Element):
         optimization_setup.parameters.add_parameter(name="max_load", index_names=["set_technologies", "set_capacity_types", "set_location", "set_time_steps_operation"], capacity_types=True, doc='Parameter which specifies the maximum load of technology relative to installed capacity', calling_class=cls)
         # carbon intensity
         optimization_setup.parameters.add_parameter(name="carbon_intensity_technology", index_names=["set_technologies", "set_location"], doc='Parameter which specifies the carbon intensity of each technology', calling_class=cls)
+        
+        optimization_setup.parameters.add_parameter(name="employee_technology", index_names=["set_technologies", "set_location"], doc='Parameter which specifies the number of emplyees of each technology', calling_class=cls)
         # calculate additional existing parameters
         optimization_setup.parameters.add_parameter(name="existing_capacities", data=cls.get_existing_quantity(optimization_setup, type_existing_quantity="capacity"),
                                                     doc="Parameter which specifies the total available capacity of existing technologies at the beginning of the optimization", calling_class=cls)
@@ -512,6 +516,16 @@ class Technology(Element):
         # total carbon emissions of technologies
         constraints.add_constraint_block(model, name="constraint_carbon_emissions_technology_total", constraint=rules.constraint_carbon_emissions_technology_total_block(),
                                          doc="total carbon emissions for each technology at each location and time step")
+
+        constraints.add_constraint_block(model, name="constraint_employee_technology",
+                                         constraint=rules.constraint_employee_technology_block(),
+                                         doc="carbon emissions for each technology at each location and time step")
+        # total carbon emissions of technologies
+        constraints.add_constraint_block(model, name="constraint_employee_technology_total", constraint=rules.constraint_employee_technology_total_block(),
+                                         doc="total carbon emissions for each technology at each location and time step")
+
+
+
 
         # disjunct if technology is on
         # the disjunction variables
@@ -1369,6 +1383,112 @@ class TechnologyRules(GenericRule):
                                                   model=self.model,
                                                   index_values=years,
                                                   index_names=["set_time_steps_yearly"])
+
+    def constraint_employee_technology_block(self):
+        """ calculate carbon emissions of each technology
+
+        .. math::
+            \mathrm{if\ tech\ is\ conversion\ tech}\ E_{h,p,t} = \\epsilon_h G_{i,n,t,y}^\mathrm{r}
+        .. math::
+            \mathrm{if\ tech\ is\ transport\ tech}\ E_{h,p,t} = \\epsilon_h F_{j,e,t}
+        .. math::
+            \mathrm{if\ tech\ is\ storage\ tech}\ E_{h,p,t} = \\epsilon_h (\\underline{H}_{k,n,t} + \\overline{H}_{k,n,t})
+
+        :return: linopy constraints
+        """
+
+        ### index sets
+        index_values, index_names = Element.create_custom_set(["set_technologies", "set_location", "set_time_steps_operation"], self.optimization_setup)
+        index = ZenIndex(index_values, index_names)
+
+        ### masks
+        # not necessary
+
+        ### index loop
+        # we loop over all technologies because of the reference carrier and flow which depend on the technology
+        # we vectorize over locations and time steps
+        constraints = []
+        for tech in index.get_unique(["set_technologies"]):
+
+            ### auxiliary calculations
+            locs = index.get_values([tech], 1, unique=True)
+            reference_carrier = self.sets["set_reference_carriers"][tech][0]
+            if tech in self.sets["set_conversion_technologies"]:
+                if reference_carrier in self.sets["set_input_carriers"][tech]:
+                    reference_flow = self.variables["flow_conversion_input"].loc[tech, reference_carrier, locs].to_linexpr()
+                    reference_flow = reference_flow.rename({"set_nodes": "set_location"})
+                else:
+                    reference_flow = self.variables["flow_conversion_output"].loc[tech, reference_carrier, locs].to_linexpr()
+                    reference_flow = reference_flow.rename({"set_nodes": "set_location"})
+            elif tech in self.sets["set_transport_technologies"]:
+                reference_flow = self.variables["flow_transport"].loc[tech, locs].to_linexpr()
+                reference_flow = reference_flow.rename({"set_edges": "set_location"})
+            else:
+                reference_flow = self.variables["flow_storage_charge"].loc[tech, locs] + self.variables["flow_storage_discharge"].loc[tech, locs]
+                reference_flow = reference_flow.rename({"set_nodes": "set_location"})
+
+            term_reference_flow = - self.parameters.employee_technology.loc[tech, locs] * reference_flow
+
+            ### formulate constraint
+            # the first term is just to ensure full shape
+            lhs = lp.merge(self.variables["employee_technology"].loc[tech].where(False).to_linexpr(),
+                           self.variables["employee_technology"].loc[tech, locs].to_linexpr(),
+                           term_reference_flow,
+                           compat="broadcast_equals")
+            rhs = 0
+            constraints.append(lhs == rhs)
+
+        ### return
+        return self.constraints.return_contraints(constraints,
+                                                  model=self.model,
+                                                  index_values=index.get_unique(["set_technologies"]),
+                                                  index_names=["set_technologies"])
+
+    def constraint_employee_technology_total_block(self):
+        """ calculate total carbon emissions of each technology
+
+        .. math::
+            E_y^{\mathcal{H}} = \sum_{t\in\mathcal{T}}\sum_{h\in\mathcal{H}} E_{h,p,t} \\tau_{t}
+
+        :return: linopy constraints
+        """
+
+        ### index sets
+        years = self.sets["set_time_steps_yearly"]
+        # this index is just for the sums in the auxiliary calculations
+        index_values, index_names = Element.create_custom_set(["set_technologies", "set_location"], self.optimization_setup)
+        index = ZenIndex(index_values, index_names)
+
+        ### masks
+        # not necessary
+
+        ### index loop
+        # we cycle over the years, because the sum of the operational time steps depends on the year
+        constraints = []
+        for year in years:
+
+            ### auxiliary calculations
+            term_summed_employee_technology = []
+            for tech in index.get_unique(["set_technologies"]):
+                locs = index.get_values([tech], "set_location", unique=True)
+                times = self.time_steps.get_time_steps_year2operation(year)
+                term_summed_employee_technology.append((self.variables["employee_technology"].loc[tech, locs, times] * self.parameters.time_steps_operation_duration.loc[times]).sum())
+            term_summed_employee_technology = lp_sum(term_summed_employee_technology)
+
+            ### formulate constraint
+            lhs = self.variables["employee_technology_total"].loc[year] - term_summed_employee_technology
+            rhs = 0
+            constraints.append(lhs == rhs)
+
+        ### return
+        return self.constraints.return_contraints(constraints,
+                                                  model=self.model,
+                                                  index_values=years,
+                                                  index_names=["set_time_steps_yearly"])
+
+
+
+
 
     def constraint_capacity_factor_block(self):
         """ Load is limited by the installed capacity and the maximum load factor

@@ -92,7 +92,7 @@ def compare_variables(test_model, optimization_setup, folder_path):
 
         # extract the values
         index = str2tuple(data_row["index"])
-        variable_value = variable_attribute.loc[*index].item()
+        variable_value = variable_attribute.loc[index].item()
 
         if not np.isclose(variable_value, data_row["value"], rtol=1e-3):
             failed_variables[data_row["variable_name"]][data_row["index"]] = {"computed_value": variable_value,
@@ -572,4 +572,4 @@ if __name__ == "__main__":
 
     config.solver["keep_files"] = False
     folder_path = os.path.dirname(__file__)
-    test_1d(config, folder_path)
+#    test_1d(config, folder_path)
